@@ -16,9 +16,16 @@ Imbunatatiri:
 -de ajustat timpul in dependenta de pozitia senzorului pe roata [facut]
 -de facut ca aplicatia android sa trimita request la /input.html?25 ca sa seteze raza rotii (pt vers veche cu html) [facut]
 
-Descriere pt v1 al aplicatiei:
+Descriere pt v1 a aplicatiei:
 	esp32 primeste prin intrerupere la pin un semnal de la hall senzor
 	in versiunea asta esp32 este wifi hotspot si html server
 	aplicatia android descarca mereu pagina html si scoate din ea viteza
 	pt a trimite raza rotii aplicatia android face un request pe /input.html?42
 	unde 42 e setarea, apoi esp32 scoate acest 42 din insusi request
+
+Descriere pt v2 a aplicatie:
+    esp32 se conecteaza la hotspot share-uit de telefon
+    esp si telefonul comunica prin tcp
+    pinul se activeaza pe falling edge
+    video cu utlizarea senzorului hall 3144 aici https://photos.app.goo.gl/j9J6SRr12WaCMCHe9
+    in folder e imaginea cu schema pentru senzor
