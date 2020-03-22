@@ -1,266 +1,237 @@
-/*
- * network_communication.c
- *
- *  Created on: Mar 2, 2020
- *      Author: vadim
- */
+/* WiFi station Example
 
-#include <stdio.h>
-#include <stdlib.h>
+   in acest fisier conectam esp32 la un anumit wifi
+*/
+
+/* BSD Socket API Example
+
+   This example code is in the Public Domain (or CC0 licensed, at your option.)
+
+   Unless required by applicable law or agreed to in writing, this
+   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+   CONDITIONS OF ANY KIND, either express or implied.
+*/
+#include <string.h>
 #include <sys/param.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
 #include "freertos/event_groups.h"
-#include "lwip/api.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event_loop.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+
 #include "lwip/err.h"
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
-#include "lwip/netdb.h"
-#include "lwip/apps/sntp.h"
-#include "esp_wifi.h"
-#include "esp_log.h"
-#include "esp_event_loop.h"
-#include "nvs_flash.h"
-#include "string.h"
-#include "esp_system.h"
-#include "driver/gpio.h"
-
-#include "lwip/err.h"
-#include "lwip/sys.h"
-
-#include <sys/param.h>
-#include <esp_http_server.h>
+#include <lwip/netdb.h>
 
 #include "bycicle_speed_project_main.h"
 
-static QueueHandle_t client_queue;
-const static int client_queue_size = 10;
+/* The examples use simple WiFi configuration that you can set via
+   'make menuconfig'.
+   If you'd rather not, just change the below entries to strings with
+   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
+*/
+#define EXAMPLE_WIFI_SSID "xiaomi_wifi"
+#define EXAMPLE_WIFI_PASS "12345678"
+#define PORT 5000
 
-#define EXAMPLE_ESP_WIFI_SSID      "MyESP32"
-#define EXAMPLE_ESP_WIFI_PASS      "12345678"
-#define EXAMPLE_MAX_STA_CONN       2
+/* FreeRTOS event group to signal when we are connected & ready to make a request */
+static EventGroupHandle_t wifi_event_group;
 
-/* FreeRTOS event group to signal when we are connected*/
+const int IPV4_GOTIP_BIT = BIT0;
+const int IPV6_GOTIP_BIT = BIT1;
 
-static const char *TAG = "wifi softAP";
+static const char *TAG = "example";
+static int break_tcp_task = 0;
+
 long double km_per_hour = 0;
 
 void set_km_per_hour(long double kms){
 	km_per_hour = kms;
 }
 
-static void http_serve(struct netconn *conn)
-{
-	const static char *TAG = "http_server";
-	const static char HTML_HEADER[] = "HTTP/1.1 200 OK\nContent-type: text/html\n\n";
-	const static char ICO_HEADER[] = "HTTP/1.1 200 OK\nContent-type: image/x-icon\n\n";
-	const static char MISSING_PAGE[] = "<br><h3>Unknown page or invalid privileges";
-	struct netbuf *inbuf;
-	static char *buf;
-	static uint16_t buflen;
-	static err_t err;
-
-	// header
-	//extern const uint8_t header_html_start[] asm("_binary_src_html_header_html_start");
-	//extern const uint8_t header_html_end[] asm("_binary_src_html_header_html_end");
-	//const uint32_t header_html_len = header_html_end - header_html_start;
-
-	// input.html
-	//extern const uint8_t input_html_start[] asm("_binary_src_html_input_html_start");
-	//extern const uint8_t input_html_end[] asm("_binary_src_html_input_html_end");
-	//const uint32_t input_html_len = input_html_end - input_html_start;
-
-	// favicon.ico
-	//extern const uint8_t favicon_ico_start[] asm("_binary_src_html_favicon_ico_start");
-	//extern const uint8_t favicon_ico_end[] asm("_binary_src_html_favicon_ico_end");
-	//const uint32_t favicon_ico_len = favicon_ico_end - favicon_ico_start;
-
-	netconn_set_recvtimeout(conn, 1000); // allow a connection timeout of 1 second
-	ESP_LOGI(TAG, "reading from client...");
-	err = netconn_recv(conn, &inbuf);
-	ESP_LOGI(TAG, "read from client");
-	if (err == ERR_OK)
-	{
-		netbuf_data(inbuf, (void **)&buf, &buflen);
-		if (buf)
-		{
-			// default page
-			if (strstr(buf, "GET / "))
-			{
-				ESP_LOGI(TAG, "Sending /");
-				netconn_write(conn, HTML_HEADER, sizeof(HTML_HEADER) - 1, NETCONN_NOCOPY);
-				//netconn_write(conn, header_html_start, header_html_len, NETCONN_NOCOPY);
-				//netconn_write(conn, input_html_start, input_html_len, NETCONN_NOCOPY);
-
-				netconn_close(conn);
-				netconn_delete(conn);
-				netbuf_delete(inbuf);
-			}
-			else if (strstr(buf, "GET /input.html "))
-			{
-				ESP_LOGI(TAG, "Sending /input.html");
-				netconn_write(conn, HTML_HEADER, sizeof(HTML_HEADER) - 1, NETCONN_NOCOPY);
-				//(conn, header_html_start, header_html_len, NETCONN_NOCOPY);
-				char speed_as_str[6];
-				snprintf(speed_as_str, 6, "%Lf", km_per_hour);
-				netconn_write(conn, speed_as_str, sizeof(speed_as_str), NETCONN_NOCOPY);
-				netconn_close(conn);
-				netconn_delete(conn);
-				netbuf_delete(inbuf);
-			}
-			else if (strstr(buf, "GET /favicon.ico "))
-			{
-				ESP_LOGI(TAG, "Sending favicon.ico");
-				netconn_write(conn, ICO_HEADER, sizeof(ICO_HEADER) - 1, NETCONN_NOCOPY);
-				//netconn_write(conn, favicon_ico_start, favicon_ico_len, NETCONN_NOCOPY);
-				netconn_close(conn);
-				netconn_delete(conn);
-				netbuf_delete(inbuf);
-			}
-			else
-			{
-				ESP_LOGI(TAG, "Unknown request");
-				ESP_LOGI(TAG, "%s", buf);
-				set_radius_roata(buf);
-				netconn_write(conn, HTML_HEADER, sizeof(HTML_HEADER) - 1, NETCONN_NOCOPY);
-				//netconn_write(conn, admin_info, admin_info_len, NETCONN_NOCOPY);
-				//netconn_write(conn, header_html_start, header_html_len, NETCONN_NOCOPY);
-				netconn_write(conn, MISSING_PAGE, sizeof(MISSING_PAGE) - 1, NETCONN_NOCOPY);
-				netconn_close(conn);
-				netconn_delete(conn);
-				netbuf_delete(inbuf);
-			}
-		}
-		else
-		{
-			ESP_LOGI(TAG, "Unknown request (empty?...)");
-			netconn_close(conn);
-			netconn_delete(conn);
-			netbuf_delete(inbuf);
-		}
-	}
-	else
-	{ // if err==ERR_OK
-		ESP_LOGI(TAG, "error %d on read, closing connection", err);
-		netconn_close(conn);
-		netconn_delete(conn);
-		netbuf_delete(inbuf);
-	}
-}
-
-// handles clients when they first connect. passes to a queue
-void server_task(void *pvParameters)
-{
-	const static char *TAG = "server_task";
-	struct netconn *conn, *newconn;
-	static err_t err;
-	client_queue = xQueueCreate(client_queue_size, sizeof(struct netconn *));
-	conn = netconn_new(NETCONN_TCP);
-	netconn_bind(conn, NULL, 80);
-	netconn_listen(conn);
-	ESP_LOGI(TAG, "server listening");
-	do
-	{
-		err = netconn_accept(conn, &newconn);
-		ESP_LOGI(TAG, "new client");
-		if (err == ERR_OK)
-		{
-
-			xQueueSendToBack(client_queue, &newconn, portMAX_DELAY);
-
-		}
-	} while (err == ERR_OK);
-	netconn_close(conn);
-	netconn_delete(conn);
-	ESP_LOGE(TAG, "task ending, rebooting board");
-	esp_restart();
-}
-
-void server_handle_task(void *pvParameters)
-{
-	const static char *TAG = "server_handle_task";
-	struct netconn *conn;
-	ESP_LOGI(TAG, "task starting");
-	for (;;)
-	{
-		xQueueReceive(client_queue, &conn, portMAX_DELAY);
-		if (!conn)
-			continue;
-		http_serve(conn);
-	}
-	vTaskDelete(NULL);
-}
-
 static esp_err_t event_handler(void *ctx, system_event_t *event)
 {
-    switch(event->event_id) {
-    case SYSTEM_EVENT_AP_STACONNECTED:
-        ESP_LOGI(TAG, "station:"MACSTR" join, AID=%d",
-                 MAC2STR(event->event_info.sta_connected.mac),
-                 event->event_info.sta_connected.aid);
+    switch (event->event_id) {
+    case SYSTEM_EVENT_STA_START:
+        esp_wifi_connect();
+        ESP_LOGI(TAG, "SYSTEM_EVENT_STA_START");
         break;
-    case SYSTEM_EVENT_AP_STAIPASSIGNED:
-        ESP_LOGI(TAG, "SYSTEM_EVENT_AP_STAIPASSIGNED");
-        ESP_LOGI(TAG, "Got IP: '%s'",
-                ip4addr_ntoa(&event->event_info.got_ip.ip_info.ip));
-        /* Start the web server */
-        xTaskCreate(&server_task, "server_task", 20000, NULL, 5, NULL);
-        xTaskCreate(&server_handle_task, "server_handle_task", 2048, NULL, 5, NULL);
+    case SYSTEM_EVENT_STA_CONNECTED:
+        /* enable ipv6 */
+        tcpip_adapter_create_ip6_linklocal(TCPIP_ADAPTER_IF_STA);
         break;
-    case SYSTEM_EVENT_AP_STADISCONNECTED:
-        ESP_LOGI(TAG, "station:"MACSTR"leave, AID=%d",
-                 MAC2STR(event->event_info.sta_disconnected.mac),
-                 event->event_info.sta_disconnected.aid);
-        /* Stop the web server */
+    case SYSTEM_EVENT_STA_GOT_IP:
+        xEventGroupSetBits(wifi_event_group, IPV4_GOTIP_BIT);
+        ESP_LOGI(TAG, "SYSTEM_EVENT_STA_GOT_IP");
+        break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+        /* This is a workaround as ESP32 WiFi libs don't currently auto-reassociate. */
+        esp_wifi_connect();
+        xEventGroupClearBits(wifi_event_group, IPV4_GOTIP_BIT);
+        xEventGroupClearBits(wifi_event_group, IPV6_GOTIP_BIT);
+        break;
+    case SYSTEM_EVENT_AP_STA_GOT_IP6:
+        xEventGroupSetBits(wifi_event_group, IPV6_GOTIP_BIT);
+        ESP_LOGI(TAG, "SYSTEM_EVENT_STA_GOT_IP6");
 
-        break;
+        char *ip6 = ip6addr_ntoa(&event->event_info.got_ip6.ip6_info.ip);
+        ESP_LOGI(TAG, "IPv6: %s", ip6);
     default:
         break;
     }
     return ESP_OK;
 }
 
-void wifi_init_softap()
+static void initialise_wifi(void)
 {
     tcpip_adapter_init();
-    ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
-
+    wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+    ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
     wifi_config_t wifi_config = {
-        .ap = {
-            .ssid = EXAMPLE_ESP_WIFI_SSID,
-            .ssid_len = strlen(EXAMPLE_ESP_WIFI_SSID),
-            .password = EXAMPLE_ESP_WIFI_PASS,
-            .max_connection = EXAMPLE_MAX_STA_CONN,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+        .sta = {
+            .ssid = EXAMPLE_WIFI_SSID,
+            .password = EXAMPLE_WIFI_PASS,
         },
     };
-    if (strlen(EXAMPLE_ESP_WIFI_PASS) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    ESP_LOGI(TAG, "Setting WiFi configuration SSID %s...", wifi_config.sta.ssid);
+    ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+    ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
+    ESP_ERROR_CHECK( esp_wifi_start() );
+}
+
+static void wait_for_ip()
+{
+    uint32_t bits = IPV4_GOTIP_BIT | IPV6_GOTIP_BIT ;
+
+    ESP_LOGI(TAG, "Waiting for AP connection...");
+    xEventGroupWaitBits(wifi_event_group, bits, false, true, portMAX_DELAY);
+    ESP_LOGI(TAG, "Connected to AP");
+}
+
+static void send_data_via_tcp_task(void *sock){
+	while(1){
+		char speed_as_str[6];
+		snprintf(speed_as_str, 6, "%Lf", km_per_hour);
+		int err = send(*(int*)sock, speed_as_str, sizeof(speed_as_str), 0);
+		if (err < 0) {
+			ESP_LOGE(TAG, "Error occured during sending: errno %d", errno);
+			break_tcp_task = 1;
+			vTaskDelete(NULL);//delete itself
+		}
+		vTaskDelay(500/portTICK_PERIOD_MS);
+	}
+}
+
+static void tcp_server_task(void *pvParameters)
+{
+    char rx_buffer[128];
+    char addr_str[128];
+    int addr_family;
+    int ip_protocol;
+
+    while (1) {
+
+#ifdef CONFIG_EXAMPLE_IPV4
+        struct sockaddr_in destAddr;
+        destAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        destAddr.sin_family = AF_INET;
+        destAddr.sin_port = htons(PORT);
+        addr_family = AF_INET;
+        ip_protocol = IPPROTO_IP;
+        inet_ntoa_r(destAddr.sin_addr, addr_str, sizeof(addr_str) - 1);
+#else // IPV6
+        struct sockaddr_in6 destAddr;
+        bzero(&destAddr.sin6_addr.un, sizeof(destAddr.sin6_addr.un));
+        destAddr.sin6_family = AF_INET6;
+        destAddr.sin6_port = htons(PORT);
+        addr_family = AF_INET6;
+        ip_protocol = IPPROTO_IPV6;
+        inet6_ntoa_r(destAddr.sin6_addr, addr_str, sizeof(addr_str) - 1);
+#endif
+
+        int listen_sock = socket(addr_family, SOCK_STREAM, ip_protocol);
+        if (listen_sock < 0) {
+            ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+            break;
+        }
+        ESP_LOGI(TAG, "Socket created");
+
+        int err = bind(listen_sock, (struct sockaddr *)&destAddr, sizeof(destAddr));
+        if (err != 0) {
+            ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
+            break;
+        }
+        ESP_LOGI(TAG, "Socket binded");
+
+        err = listen(listen_sock, 1);
+        if (err != 0) {
+            ESP_LOGE(TAG, "Error occured during listen: errno %d", errno);
+            break;
+        }
+        ESP_LOGI(TAG, "Socket listening");
+
+        struct sockaddr_in6 sourceAddr; // Large enough for both IPv4 or IPv6
+        uint addrLen = sizeof(sourceAddr);
+        int sock = accept(listen_sock, (struct sockaddr *)&sourceAddr, &addrLen);
+        if (sock < 0) {
+            ESP_LOGE(TAG, "Unable to accept connection: errno %d", errno);
+            break;
+        }
+        ESP_LOGI(TAG, "Socket accepted");
+
+        while (1) {
+        	xTaskCreate(send_data_via_tcp_task, "send_data_via_tcp", 4096, &sock, 5, NULL);
+
+            int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+            // Error occured during receiving
+            if (len < 0) {
+                ESP_LOGE(TAG, "recv failed: errno %d", errno);
+                break;
+            }
+            // Connection closed
+            else if (len == 0) {
+                ESP_LOGI(TAG, "Connection closed");
+                break;
+            }
+            // Data received
+            else {
+                // Get the sender's ip address as string
+                if (sourceAddr.sin6_family == PF_INET) {
+                    inet_ntoa_r(((struct sockaddr_in *)&sourceAddr)->sin_addr.s_addr, addr_str, sizeof(addr_str) - 1);
+                } else if (sourceAddr.sin6_family == PF_INET6) {
+                    inet6_ntoa_r(sourceAddr.sin6_addr, addr_str, sizeof(addr_str) - 1);
+                }
+
+                rx_buffer[len] = 0; // Null-terminate whatever we received and treat like a string
+                set_radius_roata(rx_buffer);
+                ESP_LOGI(TAG, "Received %d bytes from %s:", len, addr_str);
+                ESP_LOGI(TAG, "%s", rx_buffer);
+
+                if(break_tcp_task) break;//it comes from send_data_via_tcp_task
+            }
+        }
+
+        if (sock != -1) {
+            ESP_LOGE(TAG, "Shutting down socket and restarting...");
+            shutdown(sock, 0);
+            close(sock);
+        }
     }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "wifi_init_softap finished.SSID:%s password:%s",
-             EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+    //vTaskDelete(NULL);
 }
 
 void network_comm_main()
 {
-    //Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-      ESP_ERROR_CHECK(nvs_flash_erase());
-      ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
+    ESP_ERROR_CHECK( nvs_flash_init() );
+    initialise_wifi();
+    wait_for_ip();
 
-    ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
-    wifi_init_softap();
-
+    xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
 }

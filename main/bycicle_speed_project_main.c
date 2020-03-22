@@ -21,12 +21,7 @@ static xQueueHandle gpio_event_queue = NULL;
 long double RADIUS_ROATA = 25;//in cm
 
 void set_radius_roata(char *data){
-	char *param = strchr(data, '?')+1;
-	char needed_part[4];
-	memcpy(needed_part, param, sizeof(needed_part)-1);
-	needed_part[sizeof(needed_part)-1] = '\0';
-
-	long double nr = atoi(needed_part);
+	long double nr = atoi(data);
 	printf("am calculat noua valoare pt radius %Lf", nr);
 	if(nr>0){
 		printf("a venit noua valoare pt radius %Lf", nr);
@@ -46,8 +41,8 @@ static void gpio_task(void *arg){//citeste din queue
 	long double last_time = 0;//since last interrupt(adica o rotire completa a rotii)
 	for(;;){
 		if(xQueueReceive(gpio_event_queue, &io_num, portMAX_DELAY)){
-			vTaskDelay(150 / portTICK_PERIOD_MS);//debouncing pentru buton
-			if(gpio_get_level(io_num)==1){
+			//vTaskDelay(150 / portTICK_PERIOD_MS);//debouncing pentru buton
+			if(gpio_get_level(io_num)==0){
 				long double time_in_sec  = ((xTaskGetTickCount()-last_time)*portTICK_PERIOD_MS)/1000;
 				if(time_in_sec>0){
 					long double viteza_unghiulara = 2*3.14/time_in_sec;//unghi pe timp, rad/sec
@@ -72,7 +67,7 @@ static void gpio_task(void *arg){//citeste din queue
 void app_main(){
 	//configurare gpio
 	gpio_config_t io_conf;
-	io_conf.intr_type = GPIO_INTR_POSEDGE;//interrupt of rising edge
+	io_conf.intr_type = GPIO_INTR_NEGEDGE;//interrupt on falling edge
 	io_conf.pin_bit_mask = GPIO_PIN_SEL;
 	io_conf.mode = GPIO_MODE_INPUT;
 	io_conf.pull_down_en = 1;
